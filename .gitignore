@@ -2,6 +2,8 @@
 .venv/
 __pycache__/
 *.pyc
+Daily Return.xlsx
+~$Daily Return.xlsx
 
 data/
 output/

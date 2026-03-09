@@ -6,6 +6,7 @@ import json
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 import pandas as pd
 
@@ -29,6 +30,35 @@ from gdelt_support import (
     weighted_avg,
     write_json,
 )
+
+DAY_COLUMNS = [
+    "date",
+    "country_code_gdelt",
+    "country_name",
+    "country_iso3",
+    "n_articles",
+    "country_location_mentions",
+    "total_word_count",
+    "tone_mean",
+    "tone_wavg_wordcount",
+    "positive_mean",
+    "negative_mean",
+    "polarity_mean",
+    "tone_p10",
+    "tone_p50",
+    "tone_p90",
+    "tone_dispersion",
+    "local_tone",
+    "foreign_tone",
+    "local_n_articles",
+    "foreign_n_articles",
+    "unknown_source_n_articles",
+    "source_resolution_rate",
+    "local_source_total_articles",
+    "local_attention_share",
+    "total_theme_mentions",
+    "top_themes_json",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +90,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Overwrite an existing daily parquet file",
     )
+    parser.add_argument(
+        "--strict-fetch",
+        action="store_true",
+        help="Fail the entire day if any quarter-hour GKG ZIP cannot be fetched.",
+    )
     return parser.parse_args()
 
 
@@ -86,6 +121,18 @@ def extract_theme_counts(record: dict[str, str]) -> Counter:
         if parsed:
             counts[parsed["theme"]] += 1
     return counts
+
+
+def empty_day_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=DAY_COLUMNS)
+
+
+def describe_fetch_error(exc: Exception) -> str:
+    if isinstance(exc, HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, URLError):
+        return f"URL error: {clean_text(exc.reason)}"
+    return clean_text(str(exc)) or exc.__class__.__name__
 
 
 def main() -> None:
@@ -140,9 +187,21 @@ def main() -> None:
     seen_documents = set()
     rows_scanned = 0
     rows_kept = 0
+    fetched_urls: list[str] = []
+    missing_files: list[dict[str, str]] = []
 
     for url in urls:
-        payload = fetch_bytes(url)
+        try:
+            payload = fetch_bytes(url)
+        except Exception as exc:
+            if args.strict_fetch:
+                raise
+            error_message = describe_fetch_error(exc)
+            missing_files.append({"url": url, "error": error_message})
+            print(f"warn missing_gkg {date_label} {url} ({error_message})")
+            continue
+
+        fetched_urls.append(url)
         for record in iter_gkg_rows_from_zip_bytes(payload):
             rows_scanned += 1
             document_identifier = clean_text(record.get("document_identifier"))
@@ -279,14 +338,25 @@ def main() -> None:
         )
 
     rows.sort(key=lambda row: row["n_articles"], reverse=True)
-    frame = pd.DataFrame(rows)
+    frame = pd.DataFrame(rows, columns=DAY_COLUMNS) if rows else empty_day_frame()
     frame.to_parquet(output_path, index=False)
+
+    status = "ok"
+    if missing_files:
+        status = "partial"
+    if not fetched_urls:
+        status = "missing_all_files"
 
     write_json(
         manifest_path,
         {
             "date": date_label,
-            "gkg_files": len(urls),
+            "status": status,
+            "gkg_files_expected": len(urls),
+            "gkg_files_fetched": len(fetched_urls),
+            "gkg_files_missing": len(missing_files),
+            "gkg_fetch_share": (len(fetched_urls) / len(urls)) if urls else None,
+            "missing_gkg_files": missing_files,
             "rows_scanned": rows_scanned,
             "rows_kept": rows_kept,
             "countries": len(rows),
@@ -295,7 +365,10 @@ def main() -> None:
     )
 
     print(f"saved {output_path}")
-    print(f"files={len(urls)} rows_scanned={rows_scanned} rows_kept={rows_kept} countries={len(rows)}")
+    print(
+        f"files_expected={len(urls)} files_fetched={len(fetched_urls)} files_missing={len(missing_files)} "
+        f"rows_scanned={rows_scanned} rows_kept={rows_kept} countries={len(rows)} status={status}"
+    )
 
 
 if __name__ == "__main__":

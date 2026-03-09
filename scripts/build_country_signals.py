@@ -16,6 +16,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,11 @@ def parse_args() -> argparse.Namespace:
         "--country-day-dir",
         default="data/country_day",
         help="Directory containing daily country-day parquet files",
+    )
+    parser.add_argument(
+        "--manifest-dir",
+        default="data/manifests/country_day",
+        help="Optional directory containing per-day manifest JSON files for fetch coverage metadata.",
     )
     parser.add_argument(
         "--output-csv",
@@ -50,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=10,
         help="Minimum number of prior observations required before a z-score is emitted",
+    )
+    parser.add_argument(
+        "--observation-windows",
+        action="store_true",
+        help="Use trailing observed rows instead of calendar-day windows. Default is calendar-aware rolling windows.",
     )
     return parser.parse_args()
 
@@ -94,6 +105,50 @@ def load_aggregate_panel(country_day_dir: Path) -> pd.DataFrame:
     return frame
 
 
+def load_manifest_coverage(manifest_dir: Path) -> pd.DataFrame:
+    if not manifest_dir.exists():
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "day_status",
+                "gkg_fetch_share",
+                "gkg_files_expected",
+                "gkg_files_fetched",
+                "gkg_files_missing",
+            ]
+        )
+
+    rows = []
+    for path in sorted(manifest_dir.glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rows.append(
+            {
+                "date": payload.get("date"),
+                "day_status": payload.get("status"),
+                "gkg_fetch_share": payload.get("gkg_fetch_share"),
+                "gkg_files_expected": payload.get("gkg_files_expected"),
+                "gkg_files_fetched": payload.get("gkg_files_fetched"),
+                "gkg_files_missing": payload.get("gkg_files_missing"),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "day_status",
+                "gkg_fetch_share",
+                "gkg_files_expected",
+                "gkg_files_fetched",
+                "gkg_files_missing",
+            ]
+        )
+
+    frame = pd.DataFrame(rows)
+    frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
+    return frame.sort_values("date").drop_duplicates(subset=["date"], keep="last")
+
+
 def trailing_zscore(series: pd.Series, window: int, min_history: int) -> pd.Series:
     numeric = pd.to_numeric(series, errors="coerce")
     prior = numeric.shift(1)
@@ -103,10 +158,41 @@ def trailing_zscore(series: pd.Series, window: int, min_history: int) -> pd.Seri
     return (numeric - mean) / std
 
 
-def compute_country_signals(frame: pd.DataFrame, window: int, min_history: int) -> pd.DataFrame:
+def expand_country_to_calendar(country_frame: pd.DataFrame) -> pd.DataFrame:
+    country_frame = country_frame.sort_values("date").copy()
+    country_frame["has_country_day_data"] = True
+
+    full_dates = pd.date_range(
+        start=country_frame["date"].min(),
+        end=country_frame["date"].max(),
+        freq="D",
+        name="date",
+    )
+    expanded = country_frame.set_index("date").reindex(full_dates).reset_index()
+    expanded = expanded.rename(columns={"index": "date"})
+    expanded["has_country_day_data"] = expanded["has_country_day_data"].notna()
+
+    for column in ("country_code_gdelt", "country_name", "country_iso3"):
+        non_null = country_frame[column].dropna()
+        if not non_null.empty:
+            expanded[column] = expanded[column].fillna(non_null.iloc[0])
+
+    return expanded
+
+
+def compute_country_signals(
+    frame: pd.DataFrame,
+    window: int,
+    min_history: int,
+    observation_windows: bool,
+) -> pd.DataFrame:
     groups = []
     for _, country_frame in frame.groupby("country_iso3", sort=False):
         country_frame = country_frame.sort_values("date").copy()
+        country_frame["has_country_day_data"] = True
+
+        if not observation_windows:
+            country_frame = expand_country_to_calendar(country_frame)
 
         country_frame["country_news_sentiment_raw"] = pd.to_numeric(
             country_frame["local_tone"].fillna(country_frame["tone_wavg_wordcount"]),
@@ -149,7 +235,11 @@ def compute_country_signals(frame: pd.DataFrame, window: int, min_history: int) 
             country_frame["country_news_risk_raw"], window=window, min_history=min_history
         )
 
-        groups.append(country_frame)
+        observed_frame = country_frame.loc[country_frame["has_country_day_data"]].copy()
+        observed_frame["days_since_prior_observation"] = (
+            observed_frame["date"].diff().dt.days.astype("float")
+        )
+        groups.append(observed_frame)
 
     result = pd.concat(groups, ignore_index=True)
     return result.sort_values(["date", "country_iso3"]).reset_index(drop=True)
@@ -164,7 +254,16 @@ def main() -> None:
     output_parquet_path.parent.mkdir(parents=True, exist_ok=True)
 
     frame = load_aggregate_panel(country_day_dir)
-    result = compute_country_signals(frame, window=args.window, min_history=args.min_history)
+    manifest_frame = load_manifest_coverage(Path(args.manifest_dir))
+    if not manifest_frame.empty:
+        frame = frame.merge(manifest_frame, on="date", how="left", validate="many_to_one")
+
+    result = compute_country_signals(
+        frame,
+        window=args.window,
+        min_history=args.min_history,
+        observation_windows=args.observation_windows,
+    )
 
     keep_columns = [
         "date",
@@ -196,7 +295,16 @@ def main() -> None:
         "country_news_sentiment",
         "country_news_sentiment_x_attention",
         "country_news_risk",
+        "days_since_prior_observation",
     ]
+    optional_columns = [
+        "day_status",
+        "gkg_fetch_share",
+        "gkg_files_expected",
+        "gkg_files_fetched",
+        "gkg_files_missing",
+    ]
+    keep_columns.extend(column for column in optional_columns if column in result.columns)
     panel = result[keep_columns]
     panel.to_csv(output_csv_path, index=False)
     panel.to_parquet(output_parquet_path, index=False)

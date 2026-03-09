@@ -35,6 +35,8 @@ python3 scripts/stream_build_country_day.py \
   --date 2026-02-27
 ```
 
+If some quarter-hour GKG ZIPs return `404` or another fetch error, the day build now skips those files, writes a partial day from the files that were available, and records the missing ZIPs in the per-day manifest. No prior-day carry-forward or replacement data is used.
+
 ## Backfill A Range
 
 ```bash
@@ -49,6 +51,7 @@ python3 scripts/stream_backfill_country_day.py \
 ```bash
 python3 scripts/build_country_signals.py \
   --country-day-dir data/country_day \
+  --manifest-dir data/manifests/country_day \
   --window 30 \
   --min-history 10
 ```
@@ -61,6 +64,86 @@ The core GDELT-only signal block is:
 - `sentiment_x_attention_raw = local_tone * local_attention_share`
 - `country_news_risk_raw = -local_tone + 0.5 * tone_dispersion`
 - rolling 30-day z-scores for the above
+
+Signal build notes:
+
+- rolling windows are calendar-aware by default, so missing country-day files create real gaps instead of compressing the lookback window to the next 30 observed rows
+- per-day manifest coverage is merged into the signal panel when available via `day_status`, `gkg_fetch_share`, `gkg_files_expected`, `gkg_files_fetched`, and `gkg_files_missing`
+- use `--observation-windows` only if you explicitly want the older behavior of rolling over the last N observed rows regardless of date gaps
+
+## Build Price Returns And Backtest Panel
+
+Given a `PX_LAST` workbook with one daily price row per country bucket:
+
+```bash
+python3 scripts/build_country_return_panel.py \
+  --price-xlsx "Daily Return.xlsx" \
+  --signal-panel-parquet data/panels/country_signal_daily.parquet
+```
+
+Outputs:
+
+- `data/panels/country_price_return_daily.parquet`
+- `data/panels/country_price_return_daily.csv`
+- `data/panels/country_signal_backtest_daily.parquet` when the price and signal panels overlap in date
+- `data/panels/country_signal_backtest_daily.csv` when the price and signal panels overlap in date
+
+Notes:
+
+- blank or whitespace-only price cells are treated as missing
+- forward returns are emitted for both calendar-day horizons and next active market-session horizons
+- duplicated signal countries are intentionally mapped onto multiple return buckets, e.g. `USA -> NASDAQ, U.S., US SmallCap`
+- market-session weekdays are inferred from the price history for each bucket rather than hardcoded
+
+## Analyze Signal Predictiveness
+
+Run first-pass IC, decile-spread, and simple regression tests on the matched panel:
+
+```bash
+python3 scripts/analyze_country_signal_predictiveness.py \
+  --backtest-panel-parquet data/panels/country_signal_backtest_daily.parquet \
+  --output-dir output/analysis/first_pass_session
+```
+
+Optional filters:
+
+- `--signals signal_a,signal_b,...`
+- `--horizons 1,5,20`
+- `--max-gap-days 1`
+- `--exclude-partial-days`
+
+Outputs:
+
+- `output/analysis/*/country_signal_ic_summary.csv`
+- `output/analysis/*/country_signal_decile_summary.csv`
+- `output/analysis/*/country_signal_regression_summary.csv`
+
+## Export Template-Aligned Analysis Workbook
+
+To create an Excel workbook whose dates and bucket columns match `Daily Return.xlsx` exactly on every sheet:
+
+```bash
+python3 scripts/export_analysis_template_workbook.py \
+  --template-xlsx "Daily Return.xlsx" \
+  --backtest-panel-parquet data/panels/country_signal_backtest_daily.parquet \
+  --output-xlsx output/spreadsheet/gdelt_analysis_template_workbook.xlsx
+```
+
+To create a smaller workbook with only a selected subset of variables:
+
+```bash
+python3 scripts/export_analysis_template_workbook.py \
+  --template-xlsx "Daily Return.xlsx" \
+  --backtest-panel-parquet data/panels/country_signal_backtest_daily.parquet \
+  --output-xlsx output/spreadsheet/gdelt_core_analysis_workbook.xlsx \
+  --variables "ret_1d,ret_fwd_1session,ret_fwd_5session,ret_fwd_20session,country_news_sentiment,country_news_sentiment_x_attention,country_news_risk,local_tone_z,foreign_tone_z,tone_dispersion_z"
+```
+
+Notes:
+
+- every exported sheet uses the exact same date rows and bucket headers as the template workbook
+- blank cells are left blank when a variable has no value on a template date
+- Excel sheet names are capped at 31 characters, so `country_news_sentiment_x_attention` is exported as `country_news_sent_x_attention`
 
 ## Export Workbook
 
