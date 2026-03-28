@@ -47,6 +47,34 @@ COUNTRY_BUCKETS = [
 ]
 
 INDICATORS = [
+    ("monthly_metronome", "monthly_metronome"),
+    ("monthly_risk", "monthly_risk"),
+    ("monthly_defensive", "monthly_defensive"),
+    ("metronome_rank_pct", "monthly_metronome_rank_pct"),
+    ("risk_rank_pct", "monthly_risk_rank_pct"),
+    ("defensive_rank_pct", "monthly_defensive_rank_pct"),
+    ("sentiment_fast", "sentiment_fast"),
+    ("sentiment_slow", "sentiment_slow"),
+    ("sentiment_trend", "sentiment_trend"),
+    ("attention_fast", "attention_fast"),
+    ("attention_slow", "attention_slow"),
+    ("attention_trend", "attention_trend"),
+    ("risk_fast", "risk_fast"),
+    ("dispersion_fast", "dispersion_fast"),
+    ("local_tone_fast", "local_tone_fast"),
+    ("foreign_tone_fast", "foreign_tone_fast"),
+    ("local_foreign_gap", "local_foreign_gap"),
+    ("sentiment_fast_z", "sentiment_fast_z"),
+    ("sentiment_slow_z", "sentiment_slow_z"),
+    ("sentiment_trend_z", "sentiment_trend_z"),
+    ("attention_fast_z", "attention_fast_z"),
+    ("attention_slow_z", "attention_slow_z"),
+    ("attention_trend_z", "attention_trend_z"),
+    ("risk_fast_z", "risk_fast_z"),
+    ("dispersion_fast_z", "dispersion_fast_z"),
+    ("local_tone_fast_z", "local_tone_fast_z"),
+    ("foreign_tone_fast_z", "foreign_tone_fast_z"),
+    ("lf_gap_z", "local_foreign_gap_z"),
     ("country_news_sentiment", "country_news_sentiment"),
     ("country_news_risk", "country_news_risk"),
     ("country_news_sentiment_raw", "country_news_sentiment_raw"),
@@ -117,6 +145,8 @@ def load_panel(aggregates_dir: Path, panel_csv: str, panel_parquet: str) -> pd.D
                 )
             frame = pd.concat((pd.read_csv(path) for path in files), ignore_index=True)
     frame = frame.dropna(subset=["country_iso3"]).copy()
+    frame["country_iso3"] = frame["country_iso3"].astype(str).str.strip()
+    frame = frame.loc[frame["country_iso3"] != ""].copy()
     frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
     frame = frame.sort_values(["date", "country_iso3"]).drop_duplicates(
         subset=["date", "country_iso3"], keep="last"
@@ -222,7 +252,7 @@ def add_readme_sheet(wb: Workbook, frame: pd.DataFrame) -> None:
         "Layout: dates down column A, country buckets across row 1.",
         "Aliases: U.S., U.S. NASDAQ, and US SmallCap all map to USA.",
         "Aliases: China A and China H both map to CHN.",
-        "Source data: panel CSV or data/aggregates/*/country_day_all.csv",
+        "Source data: panel parquet/CSV or data/aggregates/*/country_day_all.csv",
         "Workbook sheets:",
     ]
     for idx, line in enumerate(lines, start=1):

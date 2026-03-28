@@ -98,6 +98,8 @@ def load_aggregate_panel(country_day_dir: Path) -> pd.DataFrame:
         )
 
     frame = frame.dropna(subset=["country_iso3"]).copy()
+    frame["country_iso3"] = frame["country_iso3"].astype(str).str.strip()
+    frame = frame.loc[frame["country_iso3"] != ""].copy()
     frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
     frame = frame.sort_values(["country_iso3", "date"]).drop_duplicates(
         subset=["country_iso3", "date"], keep="last"

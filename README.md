@@ -71,6 +71,37 @@ Signal build notes:
 - per-day manifest coverage is merged into the signal panel when available via `day_status`, `gkg_fetch_share`, `gkg_files_expected`, `gkg_files_fetched`, and `gkg_files_missing`
 - use `--observation-windows` only if you explicitly want the older behavior of rolling over the last N observed rows regardless of date gaps
 
+## Build Monthly Metronome
+
+The daily panel remains the source of truth. The monthly layer is a month-end decision panel built from recency-weighted daily features rather than a simple monthly average.
+
+Monthly schema:
+
+![Monthly metronome schema](docs/assets/monthly_metronome_schema.png)
+
+```bash
+python3 scripts/build_monthly_metronome.py \
+  --daily-panel-parquet data/panels/country_signal_daily.parquet \
+  --output-parquet data/panels/country_signal_monthly.parquet \
+  --output-csv data/panels/country_signal_monthly.csv
+```
+
+The monthly feature block includes:
+
+- `sentiment_fast`, `sentiment_slow`, `sentiment_trend`
+- `attention_fast`, `attention_slow`, `attention_trend`
+- `risk_fast`
+- `dispersion_fast`
+- `local_tone_fast`, `foreign_tone_fast`, `local_foreign_gap`
+
+The primary monthly composites are:
+
+- `monthly_metronome`
+- `monthly_risk`
+- `monthly_defensive`
+
+Cross-sectional rank percentiles are emitted for each month so countries can be ranked directly at the rebalance date.
+
 ## Build Price Returns And Backtest Panel
 
 Given a `PX_LAST` workbook with one daily price row per country bucket:
@@ -151,6 +182,15 @@ Notes:
 python3 scripts/export_country_sentiment_workbook.py \
   --panel-parquet data/panels/country_signal_daily.parquet \
   --output output/spreadsheet/gdelt_country_signals.xlsx \
+  --template-xlsx "/Users/arjundivecha/Library/Mobile Documents/com~apple~CloudDocs/Downloads/Sample Country .xlsx"
+```
+
+To export the monthly metronome workbook instead:
+
+```bash
+python3 scripts/export_country_sentiment_workbook.py \
+  --panel-parquet data/panels/country_signal_monthly.parquet \
+  --output output/spreadsheet/gdelt_country_signals_monthly.xlsx \
   --template-xlsx "/Users/arjundivecha/Library/Mobile Documents/com~apple~CloudDocs/Downloads/Sample Country .xlsx"
 ```
 
